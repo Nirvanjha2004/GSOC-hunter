@@ -25,6 +25,7 @@ const HEARTBEAT_INTERVAL = 60 * 60 * 1000; // Send "I'm alive" every 1 hour
 
 const TARGETS = [
   { owner: 'oaiedu', repo: 'devops-opensource-agent', filters: {} },
+  { owner: 'oaiedu', repo: 'assessment-platform-admin', filters: {} },
   { owner: 'oaiedu', repo: 'dora-quizz', filters: {} },
   { owner: 'PalisadoesFoundation', repo: 'talawa-admin', filters: { assignee: 'none' } }
 ];
