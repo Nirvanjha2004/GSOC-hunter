@@ -27,7 +27,9 @@ const TARGETS = [
   { owner: 'oaiedu', repo: 'devops-opensource-agent', filters: {} },
   { owner: 'oaiedu', repo: 'assessment-platform-admin', filters: {} },
   { owner: 'oaiedu', repo: 'dora-quizz', filters: {} },
-  { owner: 'PalisadoesFoundation', repo: 'talawa-admin', filters: { assignee: 'none' } }
+  { owner: 'learningequality', repo: 'studio', filters: { labels: 'help wanted' } },
+  { owner: 'learningequality', repo: 'kolibri', filters: { labels: 'help wanted' } },
+  { owner: 'learningequality', repo: 'kolibri-design-system', filters: { labels: 'help wanted' } }
 ];
 
 let lastChecked = new Date().toISOString();
