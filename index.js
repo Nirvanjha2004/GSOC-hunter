@@ -2,16 +2,14 @@ const express = require('express');
 const app = express();
 const port = process.env.PORT || 3000;
 
-// The "Fake Website"
+// The "Fake Website" to keep the bot alive
 app.get('/', (req, res) => {
   res.send('GSoC Hunter Bot is running! 🚀');
 });
 
-// Keep the server alive
 app.listen(port, () => {
   console.log(`Server listening on port ${port}`);
 });
-
 
 require('dotenv').config();
 const axios = require('axios');
@@ -32,7 +30,12 @@ const TARGETS = [
   { owner: 'learningequality', repo: 'kolibri-design-system', filters: { labels: 'help wanted' } }
 ];
 
+// Initialize "lastChecked" to NOW so we don't get spammed with old issues on startup
 let lastChecked = new Date().toISOString();
+
+// Memory to store IDs of issues we have already alerted
+// This prevents the bot from shouting about the same issue if a comment is added
+const seenIssues = new Set();
 
 // --- LOGGER SETUP ---
 const logger = winston.createLogger({
@@ -48,7 +51,6 @@ const logger = winston.createLogger({
 });
 
 // --- DISCORD LOGGING HELPER ---
-// Only sends important system messages, not "scanning..." noise
 async function sendSystemLogToDiscord(message, type = 'INFO') {
   const colors = {
     'INFO': 3447003, // Blue
@@ -74,11 +76,16 @@ async function sendSystemLogToDiscord(message, type = 'INFO') {
 async function checkRepos() {
   logger.info("🔄 Starting scan cycle...");
 
+  // 1. Capture the start time BEFORE we fetch. 
+  // This ensures we don't miss issues created while the fetch is happening.
+  const currentScanTime = new Date().toISOString();
+
   for (const target of TARGETS) {
     await fetchIssuesForRepo(target);
   }
   
-  lastChecked = new Date().toISOString();
+  // 2. Update the global timestamp
+  lastChecked = currentScanTime;
 }
 
 async function fetchIssuesForRepo(target) {
@@ -88,24 +95,42 @@ async function fetchIssuesForRepo(target) {
     const params = { state: 'open', since: lastChecked, ...filters };
     
     const response = await axios.get(`https://api.github.com/repos/${owner}/${repo}/issues`, {
-      headers: { Authorization: `token ${GITHUB_TOKEN}` },
+      headers: { 
+        Authorization: `token ${GITHUB_TOKEN}`,
+        // 3. Force GitHub to give us fresh data, bypassing their CDN cache
+        'Cache-Control': 'no-cache',
+        'If-None-Match': '' 
+      },
       params: params
     });
 
-    const newIssues = response.data.filter(i => !i.pull_request);
+    // 4. Filter logic: No PRs, and MUST NOT be in our "seen" memory
+    const newIssues = response.data.filter(issue => {
+      if (issue.pull_request) return false; // Ignore Pull Requests
+      if (seenIssues.has(issue.id)) return false; // Ignore if we already saw it
+      return true;
+    });
 
     if (newIssues.length > 0) {
-      logger.info(`🚨 Found ${newIssues.length} issues in ${repo}`);
+      logger.info(`🚨 Found ${newIssues.length} new issues in ${repo}`);
       for (const issue of newIssues) {
+        // Add to memory so we don't alert again
+        seenIssues.add(issue.id);
         await sendIssueAlert(issue, target);
       }
+    }
+
+    // Optional: Prune memory if it gets too big (prevent memory leaks over months)
+    if (seenIssues.size > 5000) {
+      seenIssues.clear();
+      logger.info("🧹 Cleared internal issue cache to save memory.");
     }
 
   } catch (error) {
     const errorMsg = `Error checking ${owner}/${repo}: ${error.message}`;
     logger.error(errorMsg);
     
-    // 🔥 Send ERROR to Discord so you know something is wrong
+    // Only alert Discord if it's NOT a 404 (repo missing)
     if (error.response && error.response.status !== 404) {
        await sendSystemLogToDiscord(errorMsg, 'ERROR');
     }
@@ -113,31 +138,46 @@ async function fetchIssuesForRepo(target) {
 }
 
 async function sendIssueAlert(issue, target) {
-  await axios.post(DISCORD_WEBHOOK_URL, {
-    username: "GSoC Hunter",
-    embeds: [{
-      title: `🔥 New Issue: ${target.repo}`,
-      description: `**${issue.title}**\n[Click to View](${issue.html_url})`,
-      color: 5763719,
-      footer: { text: "Go solve it!" },
-      timestamp: new Date().toISOString()
-    }]
-  });
+  // Calculate if this is "Freshly Created" or "Just Updated"
+  const created = new Date(issue.created_at);
+  const updated = new Date(issue.updated_at);
+  // If the difference is small (e.g., < 2 mins), it's brand new. Otherwise, it might be an old issue with a new label.
+  const isBrandNew = (updated - created) < 120000; 
+
+  const alertTitle = isBrandNew ? `🔥 New Issue: ${target.repo}` : `🏷️ New Label/Update: ${target.repo}`;
+
+  try {
+    await axios.post(DISCORD_WEBHOOK_URL, {
+      username: "GSoC Hunter",
+      embeds: [{
+        title: alertTitle,
+        description: `**${issue.title}**\n[Click to View on GitHub](${issue.html_url})`,
+        color: isBrandNew ? 5763719 : 16776960, // Green for new, Yellow for updates
+        footer: { text: "Go solve it!" },
+        timestamp: new Date().toISOString(),
+        fields: [
+          { name: "Labels", value: issue.labels.map(l => l.name).join(', ') || "None" }
+        ]
+      }]
+    });
+  } catch (err) {
+    logger.error("Failed to send Discord alert.");
+  }
 }
 
 // --- INIT ---
 async function startBot() {
-  const startMsg = `🚀 Bot started on Laptop! Monitoring ${TARGETS.length} repos.`;
+  const startMsg = `🚀 Bot started! Monitoring ${TARGETS.length} repos with anti-caching enabled.`;
   logger.info(startMsg);
   await sendSystemLogToDiscord(startMsg, 'SUCCESS');
 
   // 1. Run the Scanner every 60 seconds
   setInterval(checkRepos, POLL_INTERVAL);
-  checkRepos();
+  checkRepos(); // Run immediately on start
 
   // 2. Run the Heartbeat every 1 Hour
   setInterval(async () => {
-    await sendSystemLogToDiscord("❤️ I am still running properly.", 'INFO');
+    await sendSystemLogToDiscord("❤️ Bot is still running and healthy.", 'INFO');
   }, HEARTBEAT_INTERVAL);
 }
 
